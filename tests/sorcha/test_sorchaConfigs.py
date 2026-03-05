@@ -37,6 +37,7 @@ correct_simulation = {
     "ar_obs_code": "X05",
     "ar_healpix_order": 6,
     "ar_n_sub_intervals": 101,
+    "store_pointing":False
 }
 
 correct_filters_read = {"observing_filters": "r,g,i,z,u,y", "survey_name": "rubin_sim"}
@@ -1198,6 +1199,7 @@ def test_PrintConfigsToLog(tmp_path):
         "seed": 24601,
         "stats": None,
         "visits_database": None,
+        "number-workers": None,
     }
     test_configs = sorchaConfigs(config_file_location, "rubin_sim")
     test_configs.filters.mainfilter = "r"

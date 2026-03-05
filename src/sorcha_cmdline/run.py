@@ -127,6 +127,15 @@ def main():
         dest="vd",
         default=None,
     )
+    optional.add_argument(
+        "-n",
+        "--num-workers",
+        help="Number of CPU workers to use for parallel processing each chunk.",
+        dest="n",
+        type=int,
+        default=1,
+        required=False,
+    )
 
     args = parser.parse_args()
 
@@ -148,12 +157,13 @@ def execute(args):
         sorchaGetLogger,
         sorchaCommandLineParser,
         runLSSTSimulation,
+        runParaLSSTSimulation,
         sorchaArguments,
         sorchaConfigs,
         update_activity_subclasses,
         update_lc_subclasses,
     )
-    from sorcha.des import runDESSimulation
+    from sorcha.des import runDESSimulation, runParaDESSimulation
     import sys, os
 
     # Extract the output file path now in order to set up logging.
@@ -215,7 +225,12 @@ def execute(args):
         except Exception as err:
             pplogger.error(err)
             sys.exit(err)
-        runLSSTSimulation(args, sconfigs)
+        if args.n is None or args.n == 1:
+            runLSSTSimulation(args, sconfigs)
+        else:
+            pplogger.info(f"Running Sorcha across {args.n} cores")
+
+            runParaLSSTSimulation(args, sconfigs, args.n)
     elif cmd_args["surveyname"] in ["LSST", "lsst"]:
         pplogger.error(
             "ERROR: The LSST has not started yet Current allowed surveys are: {}".format(
@@ -239,7 +254,12 @@ def execute(args):
             pplogger.error(err)
             sys.exit(err)
 
-        runDESSimulation(args, sconfigs)
+        if args.n is None or args.n == 1:
+            runDESSimulation(args, sconfigs)
+        else:
+            pplogger.info(f"Running Sorcha across {args.n} cores")
+
+            runParaDESSimulation(args, sconfigs, args.n)
     else:
         pplogger.error(
             "ERROR: Survey name not recognised. Current allowed surveys are: {}".format(

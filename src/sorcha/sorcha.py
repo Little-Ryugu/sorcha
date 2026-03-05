@@ -7,6 +7,7 @@ import argparse
 import pandas as pd
 import os
 import logging
+import copy
 
 from sorcha.ephemeris.simulation_driver import create_ephemeris
 from sorcha.ephemeris.simulation_setup import precompute_pointing_information
@@ -45,6 +46,15 @@ from sorcha.utilities.sorchaCommandLineParser import sorchaCommandLineParser
 from sorcha.utilities.fileAccessUtils import FindFileOrExit
 from sorcha.utilities.citation_text import cite_sorcha
 from sorcha.utilities.sorchaGetLogger import sorchaGetLogger
+from sorcha.utilities.LoadPointingDatabase import _load_filterpointing
+from sorcha.utilities.parallelCode import (
+    _build_reader,
+    _fork_rngs,
+    _merge_worker_outputs,
+    _output_extension,
+    _read_chunk_by_ids,
+    _run_worker_chunk,
+)
 
 
 def cite():  # pragma: no cover
@@ -91,21 +101,17 @@ def runLSSTSimulation(args, sconfigs, return_only=False):
     -----------
     args : dictionary or `sorchaArguments` object
         dictionary of command-line arguments.
-
     sconfigs: dataclass
         Dataclass of configuration file arguments.
-
     return_only : bool
         Skip writing to disk and return observations and stats (if requested)
 
     Returns
     -----------
     None or observations DataFrame and stats DataFrame
-
     """
     pplogger = logging.getLogger(__name__)
     pplogger.info("Post-processing begun.")
-
     try:
         args.validate_arguments()
     except Exception as err:
@@ -121,23 +127,25 @@ def runLSSTSimulation(args, sconfigs, return_only=False):
     )
 
     PrintConfigsToLog(sconfigs, args)
-
     # End of config parsing
+    if sconfigs.simulation.store_pointing:
+        filterpointing = _load_filterpointing(args, sconfigs, verboselog=args.loglevel)
+        verboselog("Loaded cached hdf5 file for pointing information")
+    else:
+        verboselog("Reading pointing database...")
 
-    verboselog("Reading pointing database...")
+        filterpointing = PPReadPointingDatabase(
+            args.pointing_database,
+            sconfigs.filters.observing_filters,
+            sconfigs.input.pointing_sql_query,
+            args.surveyname,
+        )
 
-    filterpointing = PPReadPointingDatabase(
-        args.pointing_database,
-        sconfigs.filters.observing_filters,
-        sconfigs.input.pointing_sql_query,
-        args.surveyname,
-    )
-
-    # if we are going to compute the ephemerides, then we should pre-compute all
-    # of the needed values derived from the pointing information.
-    if sconfigs.input.ephemerides_type.casefold() != "external":
-        verboselog("Pre-computing pointing information for ephemeris generation")
-        filterpointing = precompute_pointing_information(filterpointing, args, sconfigs)
+        # if we are going to compute the ephemerides, then we should pre-compute all
+        # of the needed values derived from the pointing information.
+        if sconfigs.input.ephemerides_type.casefold() != "external":
+            verboselog("Pre-computing pointing information for ephemeris generation")
+            filterpointing = precompute_pointing_information(filterpointing, args, sconfigs)
 
     # Set up the data readers.
     ephem_type = sconfigs.input.ephemerides_type
@@ -403,3 +411,138 @@ def runLSSTSimulation(args, sconfigs, return_only=False):
             result_stats = pd.concat(result_stats)
             return result_observations, result_stats
         return result_observations
+
+
+def runParaLSSTSimulation(args, sconfigs, n_workers=2):
+    """
+    Runs the post processing survey simulator functions that apply a series of
+    filters to bias a model Solar System small body population to what the
+    Vera C. Rubin Observatory Legacy Survey of Space and Time would observe.
+
+    Parameters
+    -----------
+    args : dictionary or `sorchaArguments` object
+        dictionary of command-line arguments.
+    sconfigs: dataclass
+        Dataclass of configuration file arguments.
+
+    n_workers : int
+        Number of parallel cores processes.  Default is 1.
+
+    Returns
+    -----------
+    None or observations DataFrame and stats DataFrame
+    """
+    from concurrent.futures import (
+        ProcessPoolExecutor,
+        as_completed,
+    )  # importing here to aviod unnesseary import in 1 core function
+
+    pplogger = logging.getLogger(__name__)
+    pplogger.info("Post-processing begun.")
+    try:
+        args.validate_arguments()
+    except Exception as err:
+        pplogger.error(err)
+        sys.exit(err)
+
+    # if verbosity flagged, the verboselog function will log the message specified
+    # if not, verboselog does absolutely nothing
+    verboselog = pplogger.info if args.loglevel else lambda *a, **k: None
+
+    sconfigs.filters.mainfilter, sconfigs.filters.othercolours = PPGetMainFilterAndColourOffsets(
+        args.paramsinput, sconfigs.filters.observing_filters, sconfigs.input.aux_format
+    )
+
+    PrintConfigsToLog(sconfigs, args)
+    # End of config parsing
+    if sconfigs.simulation.store_pointing:
+        filterpointing = _load_filterpointing(args, sconfigs, verboselog=args.loglevel)
+    else:
+        verboselog("Reading pointing database...")
+
+        filterpointing = PPReadPointingDatabase(
+            args.pointing_database,
+            sconfigs.filters.observing_filters,
+            sconfigs.input.pointing_sql_query,
+            args.surveyname,
+        )
+
+        # if we are going to compute the ephemerides, then we should pre-compute all
+        # of the needed values derived from the pointing information.
+        if sconfigs.input.ephemerides_type.casefold() != "external":
+            verboselog("Pre-computing pointing information for ephemeris generation")
+            filterpointing = precompute_pointing_information(filterpointing, args, sconfigs)
+
+    probe_reader = _build_reader(args, sconfigs)
+    # Check to make sure the ObjIDs in all of the aux_data_readers are a match.
+
+    probe_reader.check_aux_object_ids()
+    all_obj_ids = probe_reader.aux_data_readers[0].obj_id_table["ObjID"].tolist()
+    lenf = len(all_obj_ids)
+    verboselog(f"Total objects to process: {lenf}")
+
+    # split object IDs across cores
+    n_workers = max(1, min(n_workers, lenf))
+    id_chunks = np.array_split(all_obj_ids, n_workers)
+
+    verboselog(f"Splitting {lenf} objects across {n_workers} core(s).")
+
+    # Parallel process.
+    worker_out_files = []
+    worker_stats_files = []
+
+    with ProcessPoolExecutor(max_workers=n_workers) as executor:
+        futures = {}
+        for wid, obj_subset in enumerate(id_chunks):
+            if len(obj_subset) == 0:
+                continue
+            # Give each worker a private copy of args with a unique outfilestem
+            # so their output files don't collide.
+            worker_args = copy.deepcopy(args)
+            worker_args.outfilestem = f"{args.outfilestem}_worker{wid}"
+
+            # randomised measurements are uncorrelated between workers while
+            # remaining reproducible.
+            if hasattr(args, "_rngs") and args._rngs is not None:
+                worker_args._rngs = _fork_rngs(args._rngs, wid)
+
+            fut = executor.submit(
+                _run_worker_chunk,
+                wid,
+                obj_subset.tolist(),
+                worker_args,
+                sconfigs,
+                filterpointing,
+            )
+            futures[fut] = wid
+
+        for fut in as_completed(futures):
+            wid = futures[fut]
+            try:
+                out_f, stats_f = fut.result()
+                worker_out_files.append(out_f)
+                worker_stats_files.append(stats_f)
+                verboselog(f"Worker {wid} finished.")
+            except Exception as exc:
+                pplogger.error(f"Worker {wid} raised an exception: {exc}")
+                raise
+
+    # Merging single core outputs
+    verboselog("Merging worker output files...")
+    _merge_worker_outputs(worker_out_files, args.outfilestem, args.outpath, sconfigs.output.output_format)
+    if args.stats is not None:
+        _merge_worker_outputs(
+            worker_stats_files,
+            args.outfilestem + "_stats",
+            args.outpath,
+            sconfigs.output.output_format,
+        )
+
+    if sconfigs.output.output_format == "sqlite3":
+        db_path = os.path.join(args.outpath, args.outfilestem + ".db")
+        if os.path.isfile(db_path):
+            pplogger.info("Indexing output SQLite database...")
+            PPIndexSQLDatabase(db_path)
+
+    pplogger.info("Sorcha process is completed.")

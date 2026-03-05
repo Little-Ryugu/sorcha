@@ -43,6 +43,8 @@ class sorchaArguments:
     pplogger = None
     """The Python logger instance"""
 
+    n = None
+
     visits = None
     """visits database. a sqlite database containing the camera footprint and on-sky location for each ccd per observation"""
 
@@ -77,8 +79,8 @@ class sorchaArguments:
         self.loglevel = args["loglevel"]
         self.stats = args["stats"]
         self.visits = args["visits_database"]
-
         self.surveyname = args["surveyname"]
+        self.n = args["number-workers"]
 
         if "complex_physical_parameters" in args.keys():
             self.complex_parameters = args["complex_physical_parameters"]

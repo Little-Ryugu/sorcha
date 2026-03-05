@@ -56,6 +56,7 @@ BASELINE_ARGS = {
     "loglevel": False,
     "stats": None,
     "visits_database": None,
+    "number-workers": None,
 }
 
 WITH_EPHEMERIS_ARGS = {
@@ -69,6 +70,7 @@ WITH_EPHEMERIS_ARGS = {
     "loglevel": False,
     "stats": None,
     "visits_database": None,
+    "number-workers": None,
 }
 
 CHUNKED_ARGS = {
@@ -82,6 +84,7 @@ CHUNKED_ARGS = {
     "loglevel": False,
     "stats": None,
     "visits_database": None,
+    "number-workers": None,
 }
 
 UNCHUNKED_ARGS = {
@@ -95,6 +98,7 @@ UNCHUNKED_ARGS = {
     "loglevel": False,
     "stats": None,
     "visits_database": None,
+    "number-workers": None,
 }
 
 
@@ -109,6 +113,7 @@ VERIFICATION_TRUTH = {
     "loglevel": False,
     "stats": None,
     "visits_database": None,
+    "number-workers": None,
 }
 
 

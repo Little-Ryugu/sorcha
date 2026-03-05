@@ -63,6 +63,7 @@ def test_pixeldict(tmp_path):
         "loglevel": False,
         "stats": None,
         "visits_database": None,
+        "number-workers": None,
     }
 
     args = sorchaArguments(cmd_args_dict)

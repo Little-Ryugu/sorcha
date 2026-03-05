@@ -94,7 +94,7 @@ def sorchaCommandLineParser(args):
     cmd_args_dict["outfilestem"] = args.t
     cmd_args_dict["loglevel"] = args.l
     cmd_args_dict["stats"] = args.st
-
+    cmd_args_dict["number-workers"] = args.n
     if cmd_args_dict["stats"] is not None:
         warn_or_remove_file(
             os.path.join(cmd_args_dict["outpath"], cmd_args_dict["stats"] + ".csv"), args.f, pplogger
